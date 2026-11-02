@@ -1,42 +1,63 @@
-import asyncio
-import json
-import aiohttp
-from mg_ismart_india_client import MgIndiaClient
+import asyncio, json, aiohttp
+from mg_ismart_india_client import MgIndiaClient, hash_control_pin
+
+def payload(vehicle, status):
+    c = status.charge
+    return {"ok": True, "vehicle": vehicle.name, "vin": vehicle.vin,
+        "battery": status.fuel_level, "range_km": status.range_km,
+        "odometer_km": status.odometer_km, "locked": status.locked,
+        "climate_running": status.climate_running,
+        "interior_temperature": status.interior_temperature,
+        "charging": None if c is None else {"is_charging": c.is_charging,
+        "is_plugged_in": c.is_plugged_in, "soc": c.soc,
+        "power_kw": c.charging_power_kw, "remaining_min": c.charge_time_remaining_min}}
+
+async def session_for(phone, password, vin=None):
+    s = aiohttp.ClientSession()
+    c = MgIndiaClient(s, phone=phone, password=password, vin=vin)
+    try:
+        await c.login()
+        vehicles = await c.vehicles()
+        if not vehicles: raise RuntimeError("No vehicle is linked to this MG account.")
+        v = c.vehicle or vehicles[0]
+        if vin and v.vin != vin: raise RuntimeError("Selected vehicle VIN did not match the MG account.")
+        c.vin = v.vin
+        return s, c, v
+    except Exception:
+        await s.close()
+        raise
 
 async def _connect(phone, password):
-    async with aiohttp.ClientSession() as session:
-        client = MgIndiaClient(session, phone=phone, password=password)
-        await client.login()
-        vehicles = await client.vehicles()
-        if not vehicles:
-            raise RuntimeError("MG login succeeded, but no vehicle was returned for this account.")
-        vehicle = vehicles[0]
-        client.vin = vehicle.vin
-        status = await client.status(include_charge=True)
-        def val(obj, key):
-            value = getattr(obj, key, None)
-            if value is None:
-                return None
-            if hasattr(value, "value"):
-                return value.value
-            return value
-        charge = getattr(status, "charge", None)
-        return {
-            "ok": True,
-            "vehicle": vehicle.name,
-            "vin": vehicle.vin,
-            "battery": val(status, "fuel_level"),
-            "range_km": val(status, "range_km"),
-            "odometer_km": val(status, "odometer_km"),
-            "locked": val(status, "locked"),
-            "climate_running": val(status, "climate_running"),
-            "interior_temperature": val(status, "interior_temperature"),
-            "charging": str(charge) if charge is not None else None
-        }
+    s,c,v = await session_for(phone,password)
+    try: return payload(v, await c.status(include_charge=True))
+    finally: await s.close()
 
-def connect(phone, password):
+async def _control(phone,password,pin,vin,action):
+    s,c,v = await session_for(phone,password,vin)
     try:
-        return json.dumps(asyncio.run(_connect(phone, password)))
-    except Exception as exc:
-        # Return only the server/client error message; never echo credentials.
-        return json.dumps({"ok": False, "error": str(exc)[:400]})
+        c.pin_hash = hash_control_pin(pin)
+        if action == "lock": await c.control_door_lock(True)
+        elif action == "unlock": await c.control_door_lock(False)
+        elif action == "climate_on": await c.control_climate(True)
+        elif action == "climate_off": await c.control_climate(False)
+        else: raise RuntimeError("Unsupported command.")
+        st = await c.status(include_charge=True)
+        verified = {"lock": st.locked is True, "unlock": st.locked is False,
+                    "climate_on": st.climate_running is True,
+                    "climate_off": st.climate_running is False}[action]
+        result = payload(v,st)
+        result.update({"verified":verified,"command":action})
+        if not verified: result["message"] = "Command sent, but fresh vehicle status did not confirm it. Check the official MG app before retrying."
+        return result
+    finally: await s.close()
+
+def run(coro):
+    try: return json.dumps(asyncio.run(coro))
+    except Exception as e:
+        msg = str(e)[:300]
+        if "did not complete" in msg.lower() or "indeterminate" in msg.lower():
+            msg = "MG did not confirm whether the command completed. Check the official MG app or vehicle before retrying."
+        return json.dumps({"ok":False,"error":msg})
+
+def connect(phone,password): return run(_connect(phone,password))
+def control(phone,password,pin,vin,action): return run(_control(phone,password,pin,vin,action))
