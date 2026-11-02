@@ -1,0 +1,310 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from enum import IntEnum
+from typing import Any
+
+
+class GpsStatus(IntEnum):
+    """Quality of the vehicle's last GPS fix (ASN.1 ``GPSStatus``)."""
+
+    NO_SIGNAL = 0
+    TIME_FIX = 1
+    FIX_2D = 2
+    FIX_3D = 3
+
+
+@dataclass(slots=True)
+class GpsPosition:
+    """A decoded ``RvsPosition``, in ordinary units.
+
+    Latitude and longitude are degrees (the protocol carries micro-degrees) and
+    altitude is metres. Speed is
+    km/h from the protocol's tenths.
+    ``hdop`` is left in raw protocol units because the scale the
+    vehicle uses is not confirmed either.
+    """
+
+    latitude: float | None = None
+    longitude: float | None = None
+    altitude_m: int | None = None
+    heading_deg: int | None = None
+    speed_kmh: float | None = None
+    hdop: int | None = None
+    satellites: int | None = None
+    gps_status: GpsStatus | None = None
+    position_time: int | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_fix(self) -> bool:
+        """True when the vehicle reported a usable 2D or 3D fix."""
+        return (
+            self.gps_status in (GpsStatus.FIX_2D, GpsStatus.FIX_3D)
+            and self.latitude is not None
+            and self.longitude is not None
+        )
+
+
+@dataclass(slots=True)
+class Vehicle:
+    vin: str
+    name: str
+    brand: str | None = None
+    model: str | None = None
+    """Human-readable model name, e.g. "Windsor"."""
+    model_year: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+    color_name: str | None = None
+    """Exterior colour as reported by the API, e.g. "Clay Beige"."""
+    series: str | None = None
+    """Raw API model/series code (e.g. "EQ100"), needed for per-model asset lookups (images, CDN paths). Distinct from :attr:`model`."""
+
+    @property
+    def is_electric(self) -> bool:
+        """True if the vehicle is an EV, from its config flags or its name."""
+        ev = _vehicle_config(self, "EV")
+        btype = _vehicle_config(self, "BType")
+        if any(str(v).strip() == "1" for v in (ev, btype) if v is not None):
+            return True
+        text = " ".join(str(v or "") for v in (self.name, self.model, self.brand, ev, btype))
+        return bool(re.search(r"\bev\b|electric|comet|windsor", text, re.I))
+
+
+def _vehicle_config(vehicle: Vehicle, code: str, default: Any = None) -> Any:
+    raw = getattr(vehicle, "raw", None)
+    if isinstance(raw, dict):
+        for block_name in ("configuration", "config", "modelConfig"):
+            block = raw.get(block_name)
+            if isinstance(block, dict) and code in block:
+                return block[code]
+        items = raw.get("vehicleModelConfiguration")
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and item.get("itemCode") == code:
+                return item.get("itemValue", default)
+    return default
+
+
+@dataclass(slots=True)
+class Capabilities:
+    climate: bool = False
+    door_lock: bool = False
+    find_my_car: bool = False
+    tailgate: bool = False
+    sunroof: bool = False
+    heated_seats: bool = False
+    window_param_ids: tuple[int, ...] = ()
+
+
+@dataclass(slots=True)
+class Status:
+    """Vehicle state from a TAP status poll.
+
+    Primarily the decoded 195-byte full-status frame (which also carries
+    :attr:`gps`), plus :attr:`charge` when the caller asked
+    :meth:`~mg_ismart_india_client.client.MgIndiaClient.status` to also fetch the
+    charging frame (see :attr:`charge`).
+    """
+
+    status_time: int | None = None
+    locked: bool | None = None
+    driver_door_open: bool | None = None
+    passenger_door_open: bool | None = None
+    rear_left_door_open: bool | None = None
+    rear_right_door_open: bool | None = None
+    boot_open: bool | None = None
+    bonnet_open: bool | None = None
+    driver_window_open: bool | None = None
+    passenger_window_open: bool | None = None
+    rear_left_window_open: bool | None = None
+    rear_right_window_open: bool | None = None
+    sunroof_open: bool | None = None
+    climate_running: bool | None = None
+    interior_temperature: float | None = None
+    exterior_temperature: float | None = None
+    fuel_level: int | None = None
+    range_km: int | None = None
+    odometer_km: int | None = None
+    aux_battery_voltage: float | None = None
+    front_left_tyre_psi: float | None = None
+    front_right_tyre_psi: float | None = None
+    rear_left_tyre_psi: float | None = None
+    rear_right_tyre_psi: float | None = None
+    tyre_monitor_status: int | None = None
+    can_bus_active: bool | None = None
+    last_can_activity: int | None = None
+    handbrake: bool | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+    gps: GpsPosition | None = None
+    charge: ChargeStatus | None = None
+    """EV charging status, or ``None``.
+
+    The 63-byte charging frame answers a different TAP request than the 195-byte
+    full status, so it is fetched only when
+    :meth:`~mg_ismart_india_client.client.MgIndiaClient.status` is asked to
+    (``include_charge=True``), which polls that charge request after the status
+    one in the same call and attaches the frame here. It stays ``None`` otherwise.
+
+    ``None`` is a routine outcome, not an error: ``include_charge`` left off, a
+    non-EV, an idle/unplugged vehicle, a secondary account whose charging is
+    disabled server-side, or a poll budget that expired before a charging frame
+    arrived.
+
+    Carries its own :attr:`ChargeStatus.status_time`, which the vehicle produces
+    independently of :attr:`status_time` here; the two may differ.
+    """
+
+    power_mode_raw: int | None = None
+    engine_status_raw: int | None = None
+    side_lights_on: bool | None = None
+    dipped_beam_on: bool | None = None
+    main_beam_on: bool | None = None
+    front_left_seat_heat_level: int | None = None
+    front_right_seat_heat_level: int | None = None
+
+
+@dataclass(slots=True)
+class Snapshot:
+    vehicle: Vehicle
+    capabilities: Capabilities
+    status: Status
+    user_info: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def battery_soc(self) -> float | None:
+        """Battery state of charge, percent; ``None`` for a non-EV.
+
+        Uses the charge frame's SOC when one is attached and carries it, else
+        the status ``fuel_level``: for India EVs that field holds the battery
+        SOC, and shared accounts get no charge frame.
+        """
+        if not self.vehicle.is_electric:
+            return None
+        charge = self.status.charge
+        if charge is not None and charge.soc is not None:
+            return charge.soc
+        return self.status.fuel_level
+
+
+@dataclass(frozen=True, slots=True)
+class ChargeStatus:
+    """Decoded EV charging status (the app-id 511 charging frame).
+
+    Produced by :func:`~mg_ismart_india_client.tap.decode_charge_status` and
+    returned by :meth:`~mg_ismart_india_client.client.MgIndiaClient.charge_status`.
+
+    Every field the frame carries is exposed here. Those whose scale is confirmed
+    (against captured frames spanning roughly 4-18 A charge current and 45-100%
+    SOC) are given in real units and named for that unit; those still unconfirmed
+    keep the vehicle's own integer and carry a ``_raw`` suffix, so no attribute ever
+    implies a precision the decoder cannot back up. Attributes typed ``| None`` are
+    the ones the protocol marks OPTIONAL and the vehicle may omit.
+    """
+
+    is_charging: bool
+    """True while the pack is actively charging."""
+    is_plugged_in: bool
+    """True whenever the charge gun is connected (whether charging or not)."""
+    charging_type: int
+    """Charge-type code from the frame; observed 2 while charging, 5/6 when idle or
+    complete. Full code table unconfirmed."""
+    charging_electricity_phase: int | None
+    """Supply phase code; code meanings unconfirmed."""
+
+    soc: float | None
+    """State of charge, percent (0-100); ``None`` if the frame omits it."""
+    range_km: float
+    """Estimated electric range, kilometres."""
+
+    charging_voltage: float
+    """Charging (pack) voltage, volts."""
+    charging_current: float
+    """Charging current, amperes; positive while charging, ~0 A when idle, so gate
+    on :attr:`is_charging`."""
+    battery_energy_kwh: float
+    """Energy currently in the pack, kilowatt-hours.
+
+    A measured BMS figure, not SOC arithmetic, so ``battery_energy_kwh / (soc / 100)``
+    recovers the vehicle's usable pack size — useful because the frame reports
+    no capacity of its own (see :attr:`total_battery_capacity_kwh`)."""
+    working_voltage: float | None
+    """Pack voltage, volts, at coarser (2.5 V) resolution than
+    :attr:`charging_voltage`; mirrors it in every captured frame."""
+    working_current: float | None
+    """Working current, amperes; identical to :attr:`charging_current` in every
+    captured frame (same encoding)."""
+
+    charge_time_elapsed_s: int | None
+    """Elapsed time in the current charge session, seconds; ``None`` if absent."""
+    start_time: int | None
+    """Charge-session start, Unix epoch seconds; ``None`` when not charging."""
+    end_time: int | None
+    """The frame's ``endTime``, Unix epoch seconds; ``None`` when not charging.
+
+    **Not a usable estimate.** It is a fixed offset from :attr:`start_time`
+    that does not move as the charge progresses. Use
+    :attr:`charge_time_remaining_min` instead."""
+    charge_time_remaining_min: int | None
+    """Estimated minutes until the charge completes; ``None`` when the frame
+    sends its idle sentinel."""
+
+    charging_pile_id: str | None
+    """Identifier of the charge point, when the vehicle reports one."""
+    charging_pile_supplier: str | None
+    """Operator of the charge point, when the vehicle reports one."""
+
+    odometer_km: float
+    """Total distance travelled, kilometres."""
+    distance_since_last_charge_km: float | None
+    """Distance driven since the last charge, kilometres (raw x 0.1); resets to 0
+    at full."""
+    power_usage_since_last_charge_kwh: float | None
+    """Energy drawn out of the pack since the last charge completed,
+    kilowatt-hours; resets to 0 when a charge completes."""
+    mileage_of_day_raw: int | None
+    """Distance travelled today, in **raw protocol units** (scale unconfirmed)."""
+    power_usage_of_day_raw: int | None
+    """Energy used today, in **raw protocol units** (scale unconfirmed)."""
+    static_energy_consumption_raw: int | None
+    """Static energy consumption, in **raw protocol units** (scale unconfirmed)."""
+
+    total_battery_capacity_kwh: float | None
+    """Total pack capacity, kilowatt-hours (raw x 0.1); absent in captured frames,
+    but the scale matches the global SAIC schema for this field."""
+    last_charge_ending_power_kwh: float | None
+    """The frame's ``lastChargeEndingPower``, kilowatt-hours.
+
+    **Despite the name, not the energy the last charge ended at**: it tracks
+    live pack energy and mirrors :attr:`battery_energy_kwh`. A caller wanting
+    the real ending energy adds :attr:`power_usage_since_last_charge_kwh` to
+    the pack energy."""
+    fota_lowest_voltage_raw: int | None
+    """Lowest cell voltage reported for FOTA, in **raw units** (unconfirmed)."""
+
+    status_time: int
+    """Time this frame was produced, Unix epoch seconds."""
+    extended_data_1: int | None = None
+    """Opaque vendor extension field; contents undocumented."""
+    extended_data_2: int | None = None
+    """Opaque vendor extension field; contents undocumented."""
+    extended_data_3: str | None = None
+    """Opaque vendor extension field; contents undocumented."""
+    extended_data_4: str | None = None
+    """Opaque vendor extension field; contents undocumented."""
+    _raw: dict[str, Any] = field(default_factory=dict)
+    """Full decoded ``RvsChargingStatus``, in raw protocol units.
+
+    Private: kept for debugging and protocol work only. Every field it holds is
+    exposed as a documented attribute above, so consumers should use those instead
+    — the shape and contents of this dict are not part of the public API and may
+    change with the protocol schema at any time.
+    """
+
+    @property
+    def charging_power_kw(self) -> float:
+        """Charging power, kilowatts: ``charging_voltage * charging_current / 1000``.
+
+        Positive while charging (the current is positive then), ~0 when idle.
+        """
+        return self.charging_voltage * self.charging_current / 1000
