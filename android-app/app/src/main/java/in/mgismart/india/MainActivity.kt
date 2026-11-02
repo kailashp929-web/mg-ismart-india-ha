@@ -12,6 +12,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -39,6 +40,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun MgApp() {
+    val activity = LocalContext.current as ComponentActivity
     var connected by remember { mutableStateOf(false) }
     var vehicle by remember { mutableStateOf("MG Windsor EV Pro") }
     var vin by remember { mutableStateOf("") }
@@ -49,30 +51,38 @@ fun MgApp() {
     var message by remember { mutableStateOf("") }
     MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Panel)) {
         Surface(Modifier.fillMaxSize(), color = Bg) {
-            if (!connected) ConnectScreen(
-                message = message,
-                onConnect = { phone, password, done ->
+            if (!connected) {
+                ConnectScreen(message = message, onLogin = { phone, password ->
                     message = "Connecting securely to MG India…"
-                    // Credentials are used only for this in-memory login attempt.
-                    // They are not saved to preferences, files, or application logs.
-                    done(false)
-                },
-                onLogin = { phone, password, setBusy ->
-                    setBusy(true)
-                    message = "Connecting securely to MG India…"
-                    val activity = this@MgApp
-                }
-            ) else Dashboard(vehicle, vin, battery, range, odometer, lock)
+                    activity.lifecycleScope.launch {
+                        val response = withContext(Dispatchers.IO) {
+                            Python.getInstance().getModule("mg_bridge").callAttr("connect", phone, password).toString()
+                        }
+                        val result = JSONObject(response)
+                        if (result.optBoolean("ok")) {
+                            vehicle = result.optString("vehicle", "MG Windsor EV Pro")
+                            vin = result.optString("vin", "")
+                            battery = result.opt("battery").displayOrDash("%")
+                            range = result.opt("range_km").displayOrDash(" km")
+                            odometer = result.opt("odometer_km").displayOrDash(" km")
+                            lock = when (result.opt("locked")) { true -> "Locked"; false -> "Unlocked"; else -> "--" }
+                            connected = true
+                            message = ""
+                        } else {
+                            message = result.optString("error", "MG connection failed. Please try again.")
+                        }
+                    }
+                })
+            } else Dashboard(vehicle, vin, battery, range, odometer, lock)
         }
     }
 }
 
+private fun Any?.displayOrDash(suffix: String): String =
+    if (this == null || this == JSONObject.NULL) "--" else "$this$suffix"
+
 @Composable
-fun ConnectScreen(
-    message: String,
-    onConnect: (String, String, (Boolean) -> Unit) -> Unit,
-    onLogin: (String, String, (Boolean) -> Unit) -> Unit
-) {
+fun ConnectScreen(message: String, onLogin: (String, String) -> Unit) {
     var phone by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -88,18 +98,15 @@ fun ConnectScreen(
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(value = password, onValueChange = { password = it }, modifier = Modifier.fillMaxWidth(), label = { Text("MG account password") }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
         Spacer(Modifier.height(18.dp))
-        Button(
-            onClick = { onLogin(phone, password) { busy = it } },
-            enabled = !busy && phone.length == 10 && password.isNotBlank(),
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Bg)
-        ) { Text(if (busy) "CONNECTING…" else "CONNECT MG ACCOUNT", fontWeight = FontWeight.Bold) }
+        Button(onClick = { busy = true; onLogin(phone, password) }, enabled = !busy && phone.length == 10 && password.isNotBlank(), modifier = Modifier.fillMaxWidth().height(52.dp), colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Bg)) {
+            Text(if (busy) "CONNECTING…" else "CONNECT MG ACCOUNT", fontWeight = FontWeight.Bold)
+        }
         if (message.isNotBlank()) {
             Spacer(Modifier.height(16.dp))
             Text(message, color = Color(0xFFFFD59A), fontSize = 12.sp)
         }
         Spacer(Modifier.height(18.dp))
-        Text("Security: credentials are used for the login attempt and are not saved by this preview. OTP/MFA is not supported by the community client. Never share your password or OTP in chat.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+        Text("Credentials are used for this login attempt and are not saved by this build. OTP/MFA is not supported by the community client. Never share your password or OTP in chat.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
     }
 }
 
