@@ -13,3 +13,5 @@ This is a UI preview only. It does not yet authenticate with MG iSMART India or 
 
 ## Build locally
 Open this folder in Android Studio with JDK 17 and Android SDK 35, then build the `app` debug variant.
+
+Build workflow updated: Android SDK setup now installs platform-tools and accepts SDK licenses before the build.
