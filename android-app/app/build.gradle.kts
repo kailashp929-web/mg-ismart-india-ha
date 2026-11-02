@@ -5,10 +5,10 @@ plugins {
 }
 
 android {
-    namespace = "in.mgismart.india"
+    namespace = "com.mgismart.india"
     compileSdk = 35
     defaultConfig {
-        applicationId = "in.mgismart.india"
+        applicationId = "com.mgismart.india"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
