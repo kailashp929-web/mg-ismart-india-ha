@@ -29,7 +29,7 @@ chaquopy {
         version = "3.11"
         pip {
             install("aiohttp==3.10.10")
-            install("asn1tools==0.167.0")
+            install("asn1tools==0.169.0")
             install("pycryptodome==3.21.0")
         }
     }
