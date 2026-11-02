@@ -1,4 +1,4 @@
-package in.mgismart.india
+package com.mgismart.india
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
