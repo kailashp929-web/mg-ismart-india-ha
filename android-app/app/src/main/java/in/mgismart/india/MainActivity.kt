@@ -64,7 +64,7 @@ class MainActivity:ComponentActivity(){
    val o=JSONObject(raw);busy=false;if(o.optBoolean("ok")){apply(o);message="Vehicle status updated."}else message=o.optString("error","Refresh failed.")}
  }
  fun send(action:String,secret:String){
-  busy=true;showPin=false;pin="";message="Sending command and verifying vehicle response…"
+  busy=true;showPin=false;pending=null;pin="";message="Sending command and verifying vehicle response…"
   activity.lifecycleScope.launch{val raw=withContext(Dispatchers.IO){Python.getInstance().getModule("mg_bridge").callAttr("control",phone,password,secret,vin,action).toString()}
    val o=JSONObject(raw);busy=false;if(o.optBoolean("ok")){apply(o);message=if(o.optBoolean("verified"))"Command confirmed by fresh vehicle status." else o.optString("message","Command sent; status not confirmed.")}else message=o.optString("error","Command failed.")}
  }
@@ -74,7 +74,7 @@ class MainActivity:ComponentActivity(){
    else Dashboard(vehicle,vin,battery,range,odo,locked,climate,cabin,charging,message,busy,::refresh,{pending=it})
    if(pending!=null)AlertDialog(onDismissRequest={pending=null},title={Text("Confirm "+pending!!.label()+"?")},
     text={Text("This sends a remote command to your MG Windsor EV Pro. Ensure the vehicle is parked safely. Your 4-digit vehicle control PIN is required.")},
-    confirmButton={TextButton(onClick={pending=null;showPin=true}){Text("Continue")}},
+    confirmButton={TextButton(onClick={showPin=true}){Text("Continue")}},
     dismissButton={TextButton(onClick={pending=null}){Text("Cancel")}})
    if(showPin)AlertDialog(onDismissRequest={showPin=false;pin=""},title={Text("Vehicle control PIN")},
     text={OutlinedTextField(value=pin,onValueChange={pin=it.filter(Char::isDigit).take(4)},label={Text("4-digit PIN")},singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.NumberPassword))},
