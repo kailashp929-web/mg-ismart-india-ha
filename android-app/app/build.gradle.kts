@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.chaquo.python")
 }
 
 android {
@@ -10,9 +11,10 @@ android {
     defaultConfig {
         applicationId = "com.mgismart.india"
         minSdk = 26
+        ndk { abiFilters += listOf("arm64-v8a") }
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "0.2.0"
     }
     buildFeatures { compose = true }
     compileOptions {
@@ -20,6 +22,17 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.11"
+        pip {
+            install("aiohttp==3.10.11")
+            install("asn1tools==0.167.0")
+            install("pycryptodome==3.21.0")
+        }
+    }
 }
 
 dependencies {
